@@ -1,0 +1,23 @@
+{
+  "expo": {
+    "name": "Scan&Go",
+    "slug": "scan-and-go",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "android": {
+      "package": "com.scanandgo.ticketing",
+      "permissions": ["CAMERA"]
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Scan&Go to scan bus ticket QR codes.",
+          "recordAudioAndroid": false
+        }
+      ]
+    ],
+    "assetBundlePatterns": ["**/*"]
+  }
+}
