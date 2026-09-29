@@ -1,93 +1,261 @@
 rules_version = '2';
+
 service cloud.firestore {
   match /databases/{database}/documents {
-    function signedIn() { return request.auth != null; }
-    function isAdmin() {
-      return signedIn() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    function signedIn() {
+      return request.auth != null;
     }
+
+    function isAdmin() {
+      return signedIn()
+        && get(
+          /databases/$(database)/documents/users/$(request.auth.uid)
+        ).data.role == 'admin';
+    }
+
     match /users/{uid} {
-      allow read: if signedIn() && (request.auth.uid == uid || isAdmin());
-      allow create: if signedIn() && request.auth.uid == uid
-        && request.resource.data.keys().hasOnly(['email','role','createdAt'])
+      allow read: if signedIn()
+        && (request.auth.uid == uid || isAdmin());
+
+      allow create: if signedIn()
+        && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly([
+          'email', 'role', 'createdAt'
+        ])
         && request.resource.data.role == 'user'
         && request.resource.data.email == request.auth.token.email
         && request.resource.data.createdAt == request.time;
-      // Promote admins only through the trusted Firebase Console / Admin SDK.
+
+      // Profile name/password changes use Firebase Authentication.
+      // Admin promotion uses the Firebase Console or Admin SDK.
       allow update, delete: if false;
     }
+
     function validSchedule(s) {
-      return s.keys().hasOnly(['origin','destination','plateNumber','departureTime','totalSeats','fare','isAircon','seats','lastTicketId','status','createdAt'])
-        && s.origin is string && s.origin.size() > 0 && s.origin.size() <= 120
-        && s.destination is string && s.destination.size() > 0 && s.destination.size() <= 120
+      return s.keys().hasOnly([
+          'origin', 'destination', 'plateNumber',
+          'departureTime', 'totalSeats', 'fare',
+          'isAircon', 'seats', 'lastTicketId',
+          'status', 'createdAt'
+        ])
+        && s.origin is string
+        && s.origin.size() > 0
+        && s.origin.size() <= 120
+        && s.destination is string
+        && s.destination.size() > 0
+        && s.destination.size() <= 120
         && s.origin != s.destination
-        && s.plateNumber is string && s.plateNumber.size() > 0 && s.plateNumber.size() <= 30
-        && s.totalSeats is int && s.totalSeats >= 1 && s.totalSeats <= 60
-        && s.fare is number && s.fare > 0 && s.fare <= 10000
-        && s.departureTime is timestamp && s.isAircon is bool && s.seats is map
-        && s.status in ['scheduled','completed','cancelled'];
+        && s.plateNumber is string
+        && s.plateNumber.size() > 0
+        && s.plateNumber.size() <= 30
+        && s.totalSeats is int
+        && s.totalSeats >= 1
+        && s.totalSeats <= 60
+        && s.fare is number
+        && s.fare > 0
+        && s.fare <= 10000
+        && s.departureTime is timestamp
+        && s.isAircon is bool
+        && s.seats is map
+        && s.status in [
+          'scheduled', 'completed', 'cancelled'
+        ];
     }
+
     match /schedules/{scheduleId} {
       allow read: if signedIn();
-      allow create: if isAdmin() && validSchedule(request.resource.data)
-        && request.resource.data.departureTime > request.time + duration.value(10,'m')
-        && request.resource.data.seats.size() == 0 && request.resource.data.lastTicketId == ''
-        && request.resource.data.status == 'scheduled' && request.resource.data.createdAt == request.time;
+
+      allow create: if isAdmin()
+        && validSchedule(request.resource.data)
+        && request.resource.data.departureTime
+          > request.time + duration.value(10, 'm')
+        && request.resource.data.seats.size() == 0
+        && request.resource.data.lastTicketId == ''
+        && request.resource.data.status == 'scheduled'
+        && request.resource.data.createdAt == request.time;
+
       function adminEdit() {
         let before = resource.data;
         let after = request.resource.data;
-        return isAdmin() && validSchedule(after) && before.status == 'scheduled'
-          && after.seats == before.seats && after.lastTicketId == before.lastTicketId
+
+        return isAdmin()
+          && validSchedule(after)
+          && before.status == 'scheduled'
+          && after.seats == before.seats
+          && after.lastTicketId == before.lastTicketId
           && after.createdAt == before.createdAt
-          && ((before.seats.size() == 0 && after.status == 'scheduled'
-              && after.departureTime > request.time + duration.value(10,'m'))
-            || (after.diff(before).affectedKeys().hasOnly(['status'])
-              && (after.status == 'cancelled' || (after.status == 'completed' && before.departureTime <= request.time))));
+          && (
+            (
+              before.seats.size() == 0
+              && after.status == 'scheduled'
+              && after.departureTime
+                > request.time + duration.value(10, 'm')
+            )
+            ||
+            (
+              after.diff(before).affectedKeys().hasOnly([
+                'status'
+              ])
+              && (
+                after.status == 'cancelled'
+                || (
+                  after.status == 'completed'
+                  && before.departureTime <= request.time
+                )
+              )
+            )
+          );
       }
-      function reserveOneSeat() {
+
+      function ticketMatchesSeat(id, key) {
+        let path =
+          /databases/$(database)/documents/tickets/$(id);
+        let t = getAfter(path).data;
+
+        return id is string
+          && key is string
+          && !exists(path)
+          && t.userId == request.auth.uid
+          && t.scheduleId == scheduleId
+          && t.seatNumber is int
+          && t.seatNumber >= 1
+          && t.seatNumber <= resource.data.totalSeats
+          && key == string(t.seatNumber)
+          && !(key in resource.data.seats)
+          && request.resource.data.seats[key] == id;
+      }
+
+      function reserveSeats() {
         let before = resource.data;
         let after = request.resource.data;
-        let ticketPath = /databases/$(database)/documents/tickets/$(after.lastTicketId);
-        let t = getAfter(ticketPath).data;
-        let key = string(t.seatNumber);
-        return signedIn() && before.status == 'scheduled'
-          && before.departureTime > request.time + duration.value(10,'m')
-          && after.diff(before).affectedKeys().hasOnly(['seats','lastTicketId'])
-          && !exists(ticketPath) && t.userId == request.auth.uid && t.scheduleId == scheduleId
-          && t.seatNumber is int && t.seatNumber >= 1 && t.seatNumber <= before.totalSeats
-          && !(key in before.seats) && after.seats[key] == after.lastTicketId
-          && after.seats.diff(before.seats).affectedKeys().hasOnly([key])
-          && after.seats.size() == before.seats.size() + 1;
+
+        let first = getAfter(
+          /databases/$(database)/documents/tickets/$(after.lastTicketId)
+        ).data;
+
+        let keys = first.get(
+          'bookingSeats',
+          [string(first.seatNumber)]
+        );
+
+        let ids = first.get(
+          'bookingTickets',
+          [after.lastTicketId]
+        );
+
+        return signedIn()
+          && before.status == 'scheduled'
+          && before.departureTime
+            > request.time + duration.value(10, 'm')
+          && after.diff(before).affectedKeys().hasOnly([
+            'seats', 'lastTicketId'
+          ])
+          && keys is list
+          && ids is list
+          && keys.size() >= 1
+          && keys.size() <= 4
+          && ids.size() == keys.size()
+          && keys.toSet().size() == keys.size()
+          && ids.toSet().size() == ids.size()
+          && ids[0] == after.lastTicketId
+          && after.seats is map
+          && after.seats.diff(before.seats)
+            .affectedKeys().hasOnly(keys)
+          && after.seats.size()
+            == before.seats.size() + keys.size()
+          && ticketMatchesSeat(ids[0], keys[0])
+          && (
+            keys.size() < 2
+            || ticketMatchesSeat(ids[1], keys[1])
+          )
+          && (
+            keys.size() < 3
+            || ticketMatchesSeat(ids[2], keys[2])
+          )
+          && (
+            keys.size() < 4
+            || ticketMatchesSeat(ids[3], keys[3])
+          );
       }
-      allow update: if adminEdit() || reserveOneSeat();
-      allow delete: if isAdmin() && resource.data.seats.size() == 0;
+
+      allow update: if reserveSeats() || adminEdit();
+
+      allow delete: if isAdmin()
+        && resource.data.seats.size() == 0;
     }
+
     match /tickets/{ticketId} {
-      // Permit reading one's missing auto-ID during an idempotent transaction.
-      allow get: if signedIn() && (!exists(/databases/$(database)/documents/tickets/$(ticketId)) || resource.data.userId == request.auth.uid || isAdmin());
-      allow list: if signedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      // Transactions may check an unused ticket ID before creating it.
+      allow get: if signedIn()
+        && (
+          !exists(
+            /databases/$(database)/documents/tickets/$(ticketId)
+          )
+          || resource.data.userId == request.auth.uid
+          || isAdmin()
+        );
+
+      allow list: if signedIn()
+        && (
+          resource.data.userId == request.auth.uid
+          || isAdmin()
+        );
+
       function validBooking() {
         let t = request.resource.data;
-        let path = /databases/$(database)/documents/schedules/$(t.scheduleId);
+        let path =
+          /databases/$(database)/documents/schedules/$(t.scheduleId);
         let s = get(path).data;
         let after = getAfter(path).data;
+
         return signedIn()
-          && t.keys().hasOnly(['userId','email','scheduleId','seatNumber','origin','destination','departureTime','plateNumber','isAircon','fare','paymentStatus','status','createdAt'])
-          && t.userId == request.auth.uid && t.email == request.auth.token.email
-          && t.seatNumber is int && t.seatNumber >= 1 && t.seatNumber <= s.totalSeats
-          && s.status == 'scheduled' && s.departureTime > request.time + duration.value(10,'m')
+          && t.keys().hasOnly([
+            'userId', 'email', 'scheduleId',
+            'seatNumber', 'origin', 'destination',
+            'departureTime', 'plateNumber', 'isAircon',
+            'fare', 'paymentStatus', 'status',
+            'createdAt', 'bookingSeats', 'bookingTickets'
+          ])
+          && t.userId == request.auth.uid
+          && t.email == request.auth.token.email
+          && t.seatNumber is int
+          && t.seatNumber >= 1
+          && t.seatNumber <= s.totalSeats
+          && s.status == 'scheduled'
+          && s.departureTime
+            > request.time + duration.value(10, 'm')
           && !(string(t.seatNumber) in s.seats)
-          && after.seats[string(t.seatNumber)] == ticketId && after.lastTicketId == ticketId
-          && t.origin == s.origin && t.destination == s.destination && t.departureTime == s.departureTime
-          && t.plateNumber == s.plateNumber && t.isAircon == s.isAircon && t.fare == s.fare
-          && t.paymentStatus == 'demo_paid' && t.status == 'booked' && t.createdAt == request.time;
+          && after.seats[string(t.seatNumber)] == ticketId
+          && t.origin == s.origin
+          && t.destination == s.destination
+          && t.departureTime == s.departureTime
+          && t.plateNumber == s.plateNumber
+          && t.isAircon == s.isAircon
+          && t.fare == s.fare
+          && t.paymentStatus == 'demo_paid'
+          && t.status == 'booked'
+          && t.createdAt == request.time;
       }
+
       allow create: if validBooking();
-      allow update: if isAdmin() && resource.data.status == 'booked'
-        && get(/databases/$(database)/documents/schedules/$(resource.data.scheduleId)).data.status == 'scheduled'
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','checkedInAt'])
-        && request.resource.data.status == 'checked_in' && request.resource.data.checkedInAt == request.time;
+
+      allow update: if isAdmin()
+        && resource.data.status == 'booked'
+        && get(
+          /databases/$(database)/documents/schedules/$(resource.data.scheduleId)
+        ).data.status == 'scheduled'
+        && request.resource.data.diff(resource.data)
+          .affectedKeys().hasOnly([
+            'status', 'checkedInAt'
+          ])
+        && request.resource.data.status == 'checked_in'
+        && request.resource.data.checkedInAt == request.time;
+
       allow delete: if false;
     }
-    match /{document=**} { allow read, write: if false; }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
   }
 }
