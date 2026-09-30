@@ -7,167 +7,137 @@ import {
 import { auth, db } from "../../firebaseConfig";
 import { canBook } from "../utils/domain";
 
-export const MAX_SEATS_PER_BOOKING = 4;
-
-export const newTicketReference = () =>
-  doc(collection(db, "tickets"));
+export function newBookingReference() {
+  const id = doc(collection(db, "tickets")).id.slice(0, 18) + "00";
+  return doc(db, "tickets", id);
+}
 
 export async function bookBusSeatsAtomic({
   scheduleId,
   seatNumbers,
   expectedFare,
-  ticketRefs,
+  bookingRef,
 }) {
   const user = auth.currentUser;
-
-  if (!user) {
-    throw Error("Please log in first.");
-  }
+  if (!user) throw Error("Please log in first.");
 
   if (
     !Array.isArray(seatNumbers) ||
-    seatNumbers.length < 1 ||
-    seatNumbers.length > MAX_SEATS_PER_BOOKING ||
+    !seatNumbers.length ||
     new Set(seatNumbers).size !== seatNumbers.length ||
-    seatNumbers.some(
-      (seat) => !Number.isInteger(seat) || seat < 1,
-    )
+    seatNumbers.some((n) => !Number.isInteger(n) || n < 1)
   ) {
-    throw Error("Choose between 1 and 4 different seats.");
+    throw Error("Choose at least one available seat.");
   }
 
   if (
-    !Array.isArray(ticketRefs) ||
-    ticketRefs.length !== seatNumbers.length ||
-    new Set(ticketRefs.map((ref) => ref.id)).size !==
-      ticketRefs.length
+    !bookingRef ||
+    !/^[a-zA-Z0-9]{18}00$/.test(bookingRef.id) ||
+    bookingRef.path !== `tickets/${bookingRef.id}`
   ) {
-    throw Error(
-      "Invalid booking references. Reopen the seat picker.",
-    );
+    throw Error("Invalid checkout. Go back to seats and try again.");
   }
+
+  const keys = [...seatNumbers]
+    .sort((a, b) => a - b)
+    .map(String);
 
   const scheduleRef = doc(db, "schedules", scheduleId);
 
+  const ticketIds = keys.map(
+    (key) => bookingRef.id.slice(0, 18) + key.padStart(2, "0")
+  );
+
   return runTransaction(db, async (tx) => {
-    // Read before writing. Reuse these IDs for retries.
-    const existing = [];
+    // Reusing the checkout ID prevents duplicate bookings on retry.
+    const previous = await tx.get(bookingRef);
 
-    for (const ref of ticketRefs) {
-      existing.push(await tx.get(ref));
-    }
+    if (previous.exists()) {
+      const t = previous.data();
+      const storedKeys = Object.keys(t.seatMap || {});
 
-    // A previous attempt may already have completed.
-    if (existing.every((snapshot) => snapshot.exists())) {
-      const matches = existing.every((snapshot, index) => {
-        const ticket = snapshot.data();
-
-        return (
-          ticket.userId === user.uid &&
-          ticket.scheduleId === scheduleId &&
-          ticket.seatNumber === seatNumbers[index] &&
-          ticket.fare === expectedFare
-        );
-      });
-
-      if (!matches) {
-        throw Error("The booking references do not match.");
+      if (
+        t.kind !== "group" ||
+        t.userId !== user.uid ||
+        t.scheduleId !== scheduleId ||
+        t.fare !== expectedFare ||
+        storedKeys.length !== keys.length ||
+        keys.some((key) => t.seatMap[key] !== bookingRef.id)
+      ) {
+        throw Error("This checkout does not match the existing booking.");
       }
 
-      return ticketRefs.map((ref) => ref.id);
-    }
-
-    if (existing.some((snapshot) => snapshot.exists())) {
-      throw Error(
-        "Booking references are inconsistent. Check Your Tickets before retrying.",
-      );
+      return ticketIds;
     }
 
     const snapshot = await tx.get(scheduleRef);
+    if (!snapshot.exists()) throw Error("This trip no longer exists.");
 
-    if (!snapshot.exists()) {
-      throw Error("This trip no longer exists.");
-    }
+    const s = snapshot.data();
 
-    const schedule = snapshot.data();
-
-    if (!canBook(schedule)) {
+    if (!canBook(s)) {
       throw Error("This trip is closed or fully booked.");
     }
 
-    if (schedule.fare !== expectedFare) {
+    if (s.fare !== expectedFare) {
+      throw Error("The fare changed. Go back to seats and review the total.");
+    }
+
+    if (seatNumbers.some((n) => n > s.totalSeats)) {
+      throw Error("A selected seat does not exist on this bus.");
+    }
+
+    const taken = keys.filter((key) => s.seats?.[key]);
+
+    if (taken.length) {
       throw Error(
-        "The fare changed. Go back to seats and review the new total.",
+        `Seats ${taken.join(", ")} are taken. No seats were reserved. ` +
+        "Go back and choose available seats."
       );
     }
 
-    if (
-      seatNumbers.some((seat) => seat > schedule.totalSeats)
-    ) {
-      throw Error("One of the selected seats is invalid.");
-    }
-
-    const occupied = seatNumbers.filter(
-      (seat) => schedule.seats[String(seat)],
+    const seatMap = Object.fromEntries(
+      keys.map((key) => [key, bookingRef.id])
     );
 
-    if (occupied.length) {
-      throw Error(
-        `Seat(s) ${occupied.join(", ")} were just booked. No seats were reserved. Go back and select available seats.`,
-      );
-    }
-
-    const updatedSeats = { ...schedule.seats };
-    const ids = ticketRefs.map((ref) => ref.id);
-
-    seatNumbers.forEach((seat, index) => {
-      const ticket = {
-        userId: user.uid,
-        email: user.email,
-        scheduleId,
-        seatNumber: seat,
-        origin: schedule.origin,
-        destination: schedule.destination,
-        departureTime: schedule.departureTime,
-        plateNumber: schedule.plateNumber,
-        isAircon: schedule.isAircon,
-        fare: schedule.fare,
-        paymentStatus: "demo_paid",
-        status: "booked",
-        createdAt: serverTimestamp(),
-      };
-
-      // Security rules use the first ticket to check the group.
-      if (index === 0) {
-        ticket.bookingSeats = seatNumbers.map(String);
-        ticket.bookingTickets = ids;
-      }
-
-      tx.set(ticketRefs[index], ticket);
-      updatedSeats[String(seat)] = ids[index];
+    tx.set(bookingRef, {
+      kind: "group",
+      userId: user.uid,
+      email: user.email,
+      scheduleId,
+      seatMap,
+      checkIns: {},
+      lastCheckedInSeat: "",
+      origin: s.origin,
+      destination: s.destination,
+      departureTime: s.departureTime,
+      plateNumber: s.plateNumber,
+      isAircon: s.isAircon,
+      fare: s.fare,
+      paymentStatus: "demo_paid",
+      status: "booked",
+      createdAt: serverTimestamp(),
     });
 
     tx.update(scheduleRef, {
-      seats: updatedSeats,
-      lastTicketId: ids[0],
+      seats: { ...s.seats, ...seatMap },
+      lastTicketId: bookingRef.id,
     });
 
-    return ids;
+    return ticketIds;
   });
 }
 
-// Compatibility with existing single-seat calls.
 export async function bookBusSeatAtomic({
   scheduleId,
   seatNumber,
   expectedFare,
-  ticketRef,
 }) {
   const ids = await bookBusSeatsAtomic({
     scheduleId,
     seatNumbers: [seatNumber],
     expectedFare,
-    ticketRefs: [ticketRef || newTicketReference()],
+    bookingRef: newBookingReference(),
   });
 
   return ids[0];

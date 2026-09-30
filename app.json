@@ -7,7 +7,9 @@
     "userInterfaceStyle": "light",
     "android": {
       "package": "com.scanandgo.ticketing",
-      "permissions": ["CAMERA"]
+      "permissions": [
+        "CAMERA"
+      ]
     },
     "plugins": [
       [
@@ -16,8 +18,13 @@
           "cameraPermission": "Allow Scan&Go to scan bus ticket QR codes.",
           "recordAudioAndroid": false
         }
-      ]
+      ],
+      "@react-native-community/datetimepicker",
+      "expo-font",
+      "expo-status-bar"
     ],
-    "assetBundlePatterns": ["**/*"]
+    "assetBundlePatterns": [
+      "**/*"
+    ]
   }
 }
