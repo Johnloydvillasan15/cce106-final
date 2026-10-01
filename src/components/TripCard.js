@@ -3,7 +3,13 @@ import { View } from "react-native";
 import { Card, Label, Info, Button } from "./UI";
 import { colors } from "../theme";
 import { canBook } from "../utils/domain";
-import { dateLabel, money } from "../utils/format";
+import {
+  ARRIVAL_LEAD_MINUTES,
+  arrivalTimeLabel,
+  dateLabel,
+  money,
+} from "../utils/format";
+
 export default function TripCard({
   trip,
   index = 0,
@@ -11,16 +17,20 @@ export default function TripCard({
   children,
   now = Date.now(),
 }) {
-  const available = trip.totalSeats - Object.keys(trip.seats || {}).length;
-  const open = canBook(trip, now),
-    status =
-      trip.status !== "scheduled"
-        ? trip.status
-        : available === 0
-          ? "Full"
-          : open
-            ? "Available"
-            : "Ready";
+  const available =
+    trip.totalSeats - Object.keys(trip.seats || {}).length;
+
+  const open = canBook(trip, now);
+
+  const status =
+    trip.status !== "scheduled"
+      ? trip.status
+      : available === 0
+        ? "Full"
+        : open
+          ? "Available"
+          : "Ready";
+
   return (
     <Card>
       <View
@@ -31,6 +41,7 @@ export default function TripCard({
         }}
       >
         <Label>Route #{index + 1}</Label>
+
         <View
           style={{
             borderRadius: 20,
@@ -40,25 +51,65 @@ export default function TripCard({
           }}
         >
           <Label
-            style={{ fontSize: 12, color: open ? colors.teal : colors.orange }}
+            style={{
+              fontSize: 12,
+              color: open ? colors.teal : colors.orange,
+            }}
           >
             {status}
           </Label>
         </View>
       </View>
+
       <Label
         bold
-        style={{ fontSize: 18, color: "black", marginTop: 8, marginBottom: 12 }}
+        style={{
+          fontSize: 18,
+          color: "black",
+          marginTop: 8,
+          marginBottom: 12,
+        }}
       >
         {trip.origin} → {trip.destination}
       </Label>
-      <Info icon="access-time">Departure: {dateLabel(trip.departureTime)}</Info>
+
+      <Info icon="access-time">
+        Departure: {dateLabel(trip.departureTime)}
+      </Info>
+
+      <Info icon="location-on">
+        <Label bold style={{ color: colors.teal }}>
+          Arrive at terminal by: {arrivalTimeLabel(trip.departureTime)}
+        </Label>
+      </Info>
+
+      <Label
+        style={{
+          fontSize: 12,
+          color: colors.muted,
+          marginVertical: 6,
+        }}
+      >
+        Recommended: arrive at {trip.origin} {ARRIVAL_LEAD_MINUTES} minutes
+        before departure for ticket verification and boarding.
+      </Label>
+
       <Info icon="event-seat">
         Available Seats: {available}/{trip.totalSeats}
       </Info>
-      <Info icon="payments">Price: {money(trip.fare)}</Info>
-      <Info icon="ac-unit">Aircon: {trip.isAircon ? "Yes" : "No"}</Info>
-      <Info icon="directions-bus">Plate Number: {trip.plateNumber}</Info>
+
+      <Info icon="payments">
+        Price: {money(trip.fare)}
+      </Info>
+
+      <Info icon="ac-unit">
+        Aircon: {trip.isAircon ? "Yes" : "No"}
+      </Info>
+
+      <Info icon="directions-bus">
+        Plate Number: {trip.plateNumber}
+      </Info>
+
       {onBook && (
         <Button
           title={
@@ -73,6 +124,7 @@ export default function TripCard({
           style={{ marginTop: 16 }}
         />
       )}
+
       {children}
     </Card>
   );

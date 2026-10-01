@@ -1,5 +1,8 @@
 import { milliseconds } from "./domain";
 
+// Recommended arrival time before bus departure.
+export const ARRIVAL_LEAD_MINUTES = 30;
+
 export const money = (value) =>
   `₱${Number(value).toFixed(2)}`;
 
@@ -13,6 +16,20 @@ export const dateLabel = (value) =>
     minute: "2-digit",
     hour12: true,
   });
+
+export function arrivalTimeLabel(departureTime) {
+  if (departureTime == null) return "Not set";
+
+  const departureMilliseconds = milliseconds(departureTime);
+
+  if (!Number.isFinite(departureMilliseconds)) {
+    return "Not set";
+  }
+
+  return dateLabel(
+    departureMilliseconds - ARRIVAL_LEAD_MINUTES * 60 * 1000,
+  );
+}
 
 export function errorMessage(error) {
   const messages = {
